@@ -77,7 +77,7 @@ program
   .description('Generate repository wiki from knowledge graph')
   .option('-f, --force', 'Force full regeneration even if up to date')
   .option('--provider <provider>', 'LLM provider: openai or cursor (default: openai)')
-  .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)')
+  .option('--model <model>', 'LLM model or Azure deployment name (default: DeepSeek-V3-test2)')
   .option(
     '--base-url <url>',
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
@@ -97,6 +97,16 @@ program
   .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
   .option('--review', 'Stop after grouping to review module structure before generating pages')
   .action(createLazyAction(() => import('./wiki.js'), 'wikiCommand'));
+
+program
+  .command('product-build [path]')
+  .description('Build product-facing wiki artifacts for an indexed repository')
+  .requiredOption('--repo-name <name>', 'Indexed repository name')
+  .requiredOption('--source-type <type>', 'Source type: archive or git')
+  .requiredOption('--source-label <label>', 'Original upload filename or repository slug')
+  .requiredOption('--mcp-endpoint <url>', 'MCP Streamable HTTP endpoint')
+  .option('--branch <name>', 'Source branch name')
+  .action(createLazyAction(() => import('./product-build.js'), 'productBuildCommand'));
 
 program
   .command('augment <pattern>')

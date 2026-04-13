@@ -51,6 +51,92 @@ export interface AnalyzeOptions {
   skipGit?: boolean;
 }
 
+export interface AnalyzeRunHooks {
+  onProgress?: (phase: string, percent: number, message: string) => void;
+  onLog?: (...args: any[]) => void;
+}
+
+export const runAnalyzeWorkflow = async (
+  repoPath: string,
+  options?: AnalyzeOptions,
+  hooks?: AnalyzeRunHooks,
+) => {
+  if (options?.verbose) {
+    process.env.GITNEXUS_VERBOSE = '1';
+  }
+
+  if (process.env.GITNEXUS_NO_GITIGNORE) {
+    (hooks?.onLog ?? console.log)(
+      '  GITNEXUS_NO_GITIGNORE is set — skipping .gitignore (still reading .gitnexusignore)\n',
+    );
+  }
+
+  const t0 = Date.now();
+  const result = await runFullAnalysis(
+    repoPath,
+    {
+      force: options?.force || options?.skills,
+      embeddings: options?.embeddings,
+      skipGit: options?.skipGit,
+      skipAgentsMd: options?.skipAgentsMd,
+    },
+    {
+      onProgress: (phase, percent, message) => {
+        hooks?.onProgress?.(phase, percent, message);
+      },
+      onLog: hooks?.onLog ?? console.log,
+    },
+  );
+
+  if (options?.skills && result.pipelineResult) {
+    hooks?.onProgress?.('skills', 99, 'Generating skill files...');
+    try {
+      const { generateSkillFiles } = await import('./skill-gen.js');
+      const { generateAIContextFiles } = await import('./ai-context.js');
+      const skillResult = await generateSkillFiles(repoPath, result.repoName, result.pipelineResult);
+      if (skillResult.skills.length > 0) {
+        (hooks?.onLog ?? console.log)(`  Generated ${skillResult.skills.length} skill files`);
+        const s = result.stats;
+        const communityResult = result.pipelineResult?.communityResult;
+        let aggregatedClusterCount = 0;
+        if (communityResult?.communities) {
+          const groups = new Map<string, number>();
+          for (const c of communityResult.communities) {
+            const label = c.heuristicLabel || c.label || 'Unknown';
+            groups.set(label, (groups.get(label) || 0) + c.symbolCount);
+          }
+          aggregatedClusterCount = Array.from(groups.values()).filter(
+            (count: number) => count >= 5,
+          ).length;
+        }
+        const { storagePath: sp } = getStoragePaths(repoPath);
+        await generateAIContextFiles(
+          repoPath,
+          sp,
+          result.repoName,
+          {
+            files: s.files ?? 0,
+            nodes: s.nodes ?? 0,
+            edges: s.edges ?? 0,
+            communities: s.communities,
+            clusters: aggregatedClusterCount,
+            processes: s.processes,
+          },
+          skillResult.skills,
+          { skipAgentsMd: options?.skipAgentsMd },
+        );
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  return {
+    ...result,
+    totalTimeSeconds: ((Date.now() - t0) / 1000).toFixed(1),
+  };
+};
+
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
 
@@ -96,12 +182,6 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   // KuzuDB migration cleanup is handled by runFullAnalysis internally.
   // Note: --skills is handled after runFullAnalysis using the returned pipelineResult.
-
-  if (process.env.GITNEXUS_NO_GITIGNORE) {
-    console.log(
-      '  GITNEXUS_NO_GITIGNORE is set — skipping .gitignore (still reading .gitnexusignore)\n',
-    );
-  }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
   const bar = new cliProgress.SingleBar(
@@ -167,17 +247,10 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   }, 1000);
 
   const t0 = Date.now();
-
-  // ── Run shared analysis orchestrator ───────────────────────────────
   try {
-    const result = await runFullAnalysis(
+    const result = await runAnalyzeWorkflow(
       repoPath,
-      {
-        force: options?.force || options?.skills,
-        embeddings: options?.embeddings,
-        skipGit: options?.skipGit,
-        skipAgentsMd: options?.skipAgentsMd,
-      },
+      options,
       {
         onProgress: (_phase, percent, message) => {
           updateBar(percent, message);
@@ -199,56 +272,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       return;
     }
 
-    // Skill generation (CLI-only, uses pipeline result from analysis)
-    if (options?.skills && result.pipelineResult) {
-      updateBar(99, 'Generating skill files...');
-      try {
-        const { generateSkillFiles } = await import('./skill-gen.js');
-        const { generateAIContextFiles } = await import('./ai-context.js');
-        const skillResult = await generateSkillFiles(
-          repoPath,
-          result.repoName,
-          result.pipelineResult,
-        );
-        if (skillResult.skills.length > 0) {
-          barLog(`  Generated ${skillResult.skills.length} skill files`);
-          // Re-generate AI context files now that we have skill info
-          const s = result.stats;
-          const communityResult = result.pipelineResult?.communityResult;
-          let aggregatedClusterCount = 0;
-          if (communityResult?.communities) {
-            const groups = new Map<string, number>();
-            for (const c of communityResult.communities) {
-              const label = c.heuristicLabel || c.label || 'Unknown';
-              groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-            }
-            aggregatedClusterCount = Array.from(groups.values()).filter(
-              (count: number) => count >= 5,
-            ).length;
-          }
-          const { storagePath: sp } = getStoragePaths(repoPath);
-          await generateAIContextFiles(
-            repoPath,
-            sp,
-            result.repoName,
-            {
-              files: s.files ?? 0,
-              nodes: s.nodes ?? 0,
-              edges: s.edges ?? 0,
-              communities: s.communities,
-              clusters: aggregatedClusterCount,
-              processes: s.processes,
-            },
-            skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd },
-          );
-        }
-      } catch {
-        /* best-effort */
-      }
-    }
-
-    const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
+    const totalTime = result.totalTimeSeconds;
 
     clearInterval(elapsedTimer);
     process.removeListener('SIGINT', sigintHandler);
