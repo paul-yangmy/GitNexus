@@ -37,8 +37,8 @@ HANDOFF.md
 HANDOFF*.md
 
 .vercel
-
-
+.GitHub
+.specify
 
 
 
@@ -96,3 +96,5 @@ GitNexus.sln
 .swarm/
 
 local_docs/
+gitnexus-analyze/
+**/gitnexus-analyze/

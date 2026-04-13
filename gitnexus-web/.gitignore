@@ -1,2 +1,5 @@
 .vercel
 .env*.local
+
+# Local font files (download via scripts/download-fonts.sh before deployment)
+public/fonts/

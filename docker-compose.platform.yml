@@ -1,0 +1,36 @@
+version: '3.8'
+
+# GitNexus Platform — SQLite edition (no external database required)
+# Usage:
+#   docker compose -f docker-compose.platform.yml up -d
+#
+# SQLite data is persisted in ./data/platform.db on the host.
+
+services:
+  gitnexus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${PORT:-4747}:4747"
+    environment:
+      PLATFORM_DB_PATH: /data/platform.db
+      JWT_SECRET: ${JWT_SECRET:-gitnexus_jwt_dev_secret_change_me}
+      PLATFORM_ADMIN_USERNAME: ${PLATFORM_ADMIN_USERNAME:-admin}
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-admin123}
+      NODE_ENV: ${NODE_ENV:-production}
+      HOST: 0.0.0.0
+      PORT: 4747
+    volumes:
+      - ./data:/data
+      - ${REPOS_PATH:-./repos}:/repos:ro
+    command: ["node", "dist/cli/index.js", "serve", "--host", "0.0.0.0", "--port", "4747"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4747/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes: {}

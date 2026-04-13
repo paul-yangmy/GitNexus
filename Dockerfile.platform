@@ -1,0 +1,50 @@
+FROM node:20-bookworm
+WORKDIR /app
+
+SHELL ["/bin/bash", "-c"]
+
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources \
+  && sed -i 's/security.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+     python3 make g++ bash dash ca-certificates cmake git \
+  && rm -rf /var/lib/apt/lists/* \
+  && ln -sf /bin/dash /bin/sh
+
+RUN npm config set registry https://registry.npmmirror.com
+
+ENV ONNXRUNTIME_NODE_SKIP_DOWNLOAD=1
+ENV npm_config_python=python3
+
+RUN git config --global url."https://github.com/".insteadOf git@github.com:
+
+# Copy source packages
+COPY gitnexus-shared /app/gitnexus-shared
+COPY gitnexus /app/gitnexus
+COPY gitnexus-web /app/gitnexus-web
+
+# Build shared types
+RUN cd /app/gitnexus-shared \
+  && npm ci \
+  && npm run build
+
+# Build CLI + server
+RUN cd /app/gitnexus \
+  && npm ci --omit=optional --ignore-scripts \
+  && echo "console.log('skipped')" > /app/gitnexus/node_modules/@ladybugdb/core/install.js \
+  && echo "console.log('skipped')" > /app/gitnexus/node_modules/onnxruntime-node/script/install \
+  && npm rebuild --prefix /app/gitnexus \
+  && npm run build
+
+# Build frontend for production (static files served by api-server)
+RUN cd /app/gitnexus-web \
+  && npm ci --ignore-scripts \
+  && npm run build
+
+# Copy startup helper
+COPY docker/start-platform.sh /app/docker/start-platform.sh
+RUN chmod +x /app/docker/start-platform.sh
+
+WORKDIR /app/gitnexus
+
+EXPOSE 4747

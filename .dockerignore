@@ -1,0 +1,16 @@
+.git
+.gitignore
+.claude
+.claude-plugin
+.cursor
+.history
+.sisyphus
+**/node_modules
+**/dist
+**/.vite
+**/coverage
+**/.turbo
+**/*.tsbuildinfo
+eval/.venv
+eval/__pycache__
+
