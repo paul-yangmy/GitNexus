@@ -10,6 +10,7 @@
  * Supports incremental updates via git diff + module-file mapping.
  */
 
+import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { execSync, execFileSync } from 'child_process';
@@ -824,7 +825,10 @@ export class WikiGenerator {
 
   private getCurrentCommit(): string {
     try {
-      return execSync('git rev-parse HEAD', { cwd: this.repoPath }).toString().trim();
+      return execSync('git rev-parse HEAD', {
+        cwd: this.repoPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).toString().trim();
     } catch {
       return '';
     }
@@ -1064,11 +1068,17 @@ export class WikiGenerator {
   }
 
   private slugify(name: string): string {
-    return name
+    // Keep CJK characters (\u4e00-\u9fff), letters, and digits; replace others with hyphens
+    const slug = name
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/[^a-z0-9\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 60);
+    // Fallback: if slug is empty (e.g. emoji-only names), use a short hash
+    if (!slug) {
+      return 'module-' + crypto.createHash('md5').update(name).digest('hex').slice(0, 8);
+    }
+    return slug;
   }
 
   private async fileExists(fp: string): Promise<boolean> {

@@ -1,121 +1,121 @@
 /**
  * LLM Prompt Templates for Wiki Generation
  *
- * All prompts produce deterministic, source-grounded documentation.
+ * All prompts produce deterministic, source-grounded documentation in Chinese.
  * Templates use {{PLACEHOLDER}} substitution.
  */
 
 // ─── Grouping Prompt ──────────────────────────────────────────────────
 
-export const GROUPING_SYSTEM_PROMPT = `You are a documentation architect. Given a list of source files with their exported symbols, group them into logical documentation modules.
+export const GROUPING_SYSTEM_PROMPT = `你是一名文档架构师。给定一批源文件及其导出的符号，将它们按逻辑归组为文档模块。
 
-Rules:
-- Each module should represent a cohesive feature, layer, or domain
-- Every file must appear in exactly one module
-- Module names should be human-readable (e.g. "Authentication", "Database Layer", "API Routes")
-- Aim for 5-15 modules for a typical project. Fewer for small projects, more for large ones
-- Group by functionality, not by file type or directory structure alone
-- Do NOT create modules for tests, configs, or non-source files`;
+规则：
+- 每个模块应代表一个内聚的功能、层次或领域
+- 每个文件必须且只能出现在一个模块中
+- 模块名称应通俗易懂（例如"用户认证"、"数据库层"、"API 路由"）
+- 典型项目建议 5-15 个模块，小项目可以更少，大项目可以更多
+- 按功能分组，而非单纯按文件类型或目录结构划分
+- 不要为测试文件、配置文件或非源文件单独创建模块`;
 
-export const GROUPING_USER_PROMPT = `Group these source files into documentation modules.
+export const GROUPING_USER_PROMPT = `将以下源文件归组为文档模块。
 
-**Files and their exports:**
+**文件及其导出符号：**
 {{FILE_LIST}}
 
-**Directory structure:**
+**目录结构：**
 {{DIRECTORY_TREE}}
 
-Respond with ONLY a JSON object mapping module names to file path arrays. No markdown, no explanation.
-Example format:
+请只以 JSON 对象格式回复，将模块名映射到文件路径数组，不要包含 markdown 或任何说明文字。
+示例格式：
 {
-  "Authentication": ["src/auth/login.ts", "src/auth/session.ts"],
-  "Database": ["src/db/connection.ts", "src/db/models.ts"]
+  "用户认证": ["src/auth/login.ts", "src/auth/session.ts"],
+  "数据库": ["src/db/connection.ts", "src/db/models.ts"]
 }`;
 
 // ─── Leaf Module Prompt ───────────────────────────────────────────────
 
-export const MODULE_SYSTEM_PROMPT = `You are a technical documentation writer. Write clear, developer-focused documentation for a code module.
+export const MODULE_SYSTEM_PROMPT = `你是一名技术文档撰写人。请为一个代码模块撰写清晰、面向开发者的中文文档。
 
-Rules:
-- Output ONLY the documentation content — no meta-commentary like "I've written...", "Here's the documentation...", "The documentation covers...", or similar
-- Start directly with the module heading and content
-- Reference actual function names, class names, and code patterns — do NOT invent APIs
-- Use the call graph and execution flow data for accuracy, but do NOT mechanically list every edge
-- Include Mermaid diagrams only when they genuinely help understanding. Keep them small (5-10 nodes max)
-- Structure the document however makes sense for this module — there is no mandatory format
-- Write for a developer who needs to understand and contribute to this code`;
+规则：
+- 只输出文档内容本身，不要加"我已编写好……""以下是文档……"之类的前置说明
+- 直接以模块标题和正文内容开始
+- 引用真实的函数名、类名和代码模式，不要凭空捏造 API
+- 参考调用图和执行流程数据确保准确，但不要机械地列举每条边
+- 仅在 Mermaid 图确实有助于理解时才添加，保持简洁（最多 5-10 个节点）
+- 根据模块特点自由决定文档结构，没有强制格式要求
+- 文档应面向需要理解并参与这段代码开发的工程师`;
 
-export const MODULE_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module.
+export const MODULE_USER_PROMPT = `为 **{{MODULE_NAME}}** 模块撰写中文文档。
 
-## Source Code
+## 源代码
 
 {{SOURCE_CODE}}
 
-## Call Graph & Execution Flows (reference for accuracy)
+## 调用图与执行流程（供参考，保证准确性）
 
-Internal calls: {{INTRA_CALLS}}
-Outgoing calls: {{OUTGOING_CALLS}}
-Incoming calls: {{INCOMING_CALLS}}
-Execution flows: {{PROCESSES}}
+模块内部调用：{{INTRA_CALLS}}
+对外调用：{{OUTGOING_CALLS}}
+被调用来源：{{INCOMING_CALLS}}
+执行流程：{{PROCESSES}}
 
 ---
 
-Write comprehensive documentation for this module. Cover its purpose, how it works, its key components, and how it connects to the rest of the codebase. Use whatever structure best fits this module — you decide the sections and headings. Include a Mermaid diagram only if it genuinely clarifies the architecture.`;
+请为该模块撰写完整的中文文档，涵盖其用途、工作原理、核心组件以及与代码库其他部分的关联。文档结构由你决定。如果 Mermaid 图确实能帮助理解架构，可以酌情添加。`;
 
 // ─── Parent Module Prompt ─────────────────────────────────────────────
 
-export const PARENT_SYSTEM_PROMPT = `You are a technical documentation writer. Write a summary page for a module that contains sub-modules. Synthesize the children's documentation — do not re-read source code.
+export const PARENT_SYSTEM_PROMPT = `你是一名技术文档撰写人。请为包含若干子模块的父模块撰写中文摘要页。综合子模块文档进行整合，无需重新阅读源代码。
 
-Rules:
-- Output ONLY the documentation content — no meta-commentary like "I've written...", "Here's the documentation...", "The documentation covers...", or similar
-- Start directly with the module heading and content
-- Reference actual components from the child modules
-- Focus on how the sub-modules work together, not repeating their individual docs
-- Keep it concise — the reader can click through to child pages for detail
-- Include a Mermaid diagram only if it genuinely clarifies how the sub-modules relate`;
+规则：
+- 只输出文档内容本身，不要加任何前置说明
+- 直接以模块标题和正文内容开始
+- 引用子模块中的实际组件
+- 重点说明子模块如何协同工作，不要重复各自的详情
+- 保持简洁——读者可以点击子模块页面查看细节
+- 仅在 Mermaid 图确实有助于说明子模块关系时才添加`;
 
-export const PARENT_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module, which contains these sub-modules:
+export const PARENT_USER_PROMPT = `为 **{{MODULE_NAME}}** 模块撰写中文文档，该模块包含以下子模块：
 
 {{CHILDREN_DOCS}}
 
-Cross-module calls: {{CROSS_MODULE_CALLS}}
-Shared execution flows: {{CROSS_PROCESSES}}
+跨模块调用：{{CROSS_MODULE_CALLS}}
+共享执行流程：{{CROSS_PROCESSES}}
 
 ---
 
-Write a concise overview of this module group. Explain its purpose, how the sub-modules fit together, and the key workflows that span them. Link to sub-module pages (e.g. \`[Sub-module Name](sub-module-slug.md)\`) rather than repeating their content. Use whatever structure fits best.`;
+请撰写该模块组的简洁中文概述，说明其用途、各子模块如何组合以及跨子模块的关键工作流。使用链接引用子模块页面（例如 \`[子模块名](sub-module-slug.md)\`），而非重复其内容。`;
 
 // ─── Overview Prompt ──────────────────────────────────────────────────
 
-export const OVERVIEW_SYSTEM_PROMPT = `You are a technical documentation writer. Write the top-level overview page for a repository wiki. This is the first page a new developer sees.
+export const OVERVIEW_SYSTEM_PROMPT = `你是一名技术文档撰写人。请为代码仓库 Wiki 撰写顶层中文概览页。这是新开发者看到的第一个页面。
 
-Rules:
-- Output ONLY the documentation content — no meta-commentary like "I've written...", "Here's the documentation...", "The page has been rewritten...", or similar
-- Start directly with the project heading and content
-- Be clear and welcoming — this is the entry point to the entire codebase
-- Reference actual module names so readers can navigate to their docs
-- Include a high-level Mermaid architecture diagram showing only the most important modules and their relationships (max 10 nodes). A new dev should grasp it in 10 seconds
-- Do NOT create module index tables or list every module with descriptions — just link to module pages naturally within the text
-- Use the inter-module edges and execution flow data for accuracy, but do NOT dump them raw`;
+规则：
+- 只输出文档内容本身，不要加任何前置说明
+- 直接以项目标题和正文开始
+- 清晰友好——这是整个代码库的入口
+- 引用实际模块名，方便读者导航
+- 包含一张高层次的 Mermaid 架构图，只展示最重要的模块及其关系（最多 10 个节点），新开发者能在 10 秒内理解
+- 不要创建模块索引表或逐一列举所有模块的描述——在正文中自然地使用链接引用模块即可
+- 使用模块间调用边和执行流程数据确保准确，不要原文照搬`;
 
-export const OVERVIEW_USER_PROMPT = `Write the overview page for this repository's wiki.
+export const OVERVIEW_USER_PROMPT = `为该代码仓库的 Wiki 撰写中文概览页。
 
-## Project Info
+## 项目信息
 
 {{PROJECT_INFO}}
 
-## Module Summaries
+## 各模块摘要
 
 {{MODULE_SUMMARIES}}
 
-## Reference Data (for accuracy — do not reproduce verbatim)
+## 参考数据（用于保证准确性——不要逐字复制）
 
-Inter-module call edges: {{MODULE_EDGES}}
-Key system flows: {{TOP_PROCESSES}}
+模块间调用边：{{MODULE_EDGES}}
+主要系统流程：{{TOP_PROCESSES}}
 
 ---
 
-Write a clear overview of this project: what it does, how it's architected, and the key end-to-end flows. Include a simple Mermaid architecture diagram (max 10 nodes, big-picture only). Link to module pages (e.g. \`[Module Name](module-slug.md)\`) naturally in the text rather than listing them in a table. If project config was provided, include brief setup instructions. Structure the page however reads best.`;
+请撰写一份清晰的中文概览：介绍项目的功能、架构以及主要端到端流程。包含一张简洁的 Mermaid 架构图（最多 10 个节点，只展示大图）。在正文中自然引用模块页面链接（例如 \`[模块名](module-slug.md)\`），而非通过表格列举。如果提供了项目配置信息，请附上简短的安装步骤。`;
 
 // ─── Template Substitution Helper ─────────────────────────────────────
 

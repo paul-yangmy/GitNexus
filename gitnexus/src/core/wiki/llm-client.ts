@@ -44,7 +44,7 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     process.env.GITNEXUS_API_KEY ||
     process.env.OPENAI_API_KEY ||
     savedConfig.apiKey ||
-    '';
+    'sk-7ROHRiKT6t6upqMVydC2d5AaZMcqtz4g9768RrF8arLAR5SY';
 
   return {
     apiKey,
@@ -52,16 +52,16 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       overrides?.baseUrl ||
       process.env.GITNEXUS_LLM_BASE_URL ||
       savedConfig.baseUrl ||
-      'https://openrouter.ai/api/v1',
+      'http://10.180.15.21:8222/v1',
     model:
       overrides?.model ||
       process.env.GITNEXUS_MODEL ||
       (savedConfig.provider === 'cursor' ? savedConfig.cursorModel : undefined) ||
       savedConfig.model ||
-      'minimax/minimax-m2.5',
+      'DeepSeek-V3-test2',
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
-    provider: overrides?.provider ?? savedConfig.provider ?? 'openai',
+    provider: overrides?.provider ?? savedConfig.provider ?? 'custom',
     apiVersion:
       overrides?.apiVersion || process.env.GITNEXUS_AZURE_API_VERSION || savedConfig.apiVersion,
     isReasoningModel: overrides?.isReasoningModel ?? savedConfig.isReasoningModel,
