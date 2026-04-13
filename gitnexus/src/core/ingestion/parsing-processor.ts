@@ -636,8 +636,8 @@ export const processParsing = async (
         onFileProgress,
       );
     } catch (err) {
-      console.warn(
-        'Worker pool parsing failed, falling back to sequential:',
+      console.log(
+        'Worker pool parsing switched to sequential fallback:',
         err instanceof Error ? err.message : err,
       );
     }

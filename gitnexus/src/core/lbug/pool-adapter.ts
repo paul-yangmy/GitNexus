@@ -95,6 +95,25 @@ export const touchRepo = (repoId: string): void => {
 };
 
 /**
+ * Force-close all pool entries that reference a specific dbPath and remove
+ * the shared Database from the cache. Used before re-opening a freshly
+ * written DB (e.g. wiki opening a DB that analyze just rebuilt).
+ */
+export const releaseAllForPath = (dbPath: string): void => {
+  for (const [repoId, entry] of pool) {
+    if (entry.dbPath === dbPath) {
+      closeOne(repoId);
+    }
+  }
+  // If a dbCache entry survived (refCount already 0 but not yet evicted), purge it.
+  const shared = dbCache.get(dbPath);
+  if (shared && shared.refCount <= 0) {
+    shared.db.close().catch(() => {});
+    dbCache.delete(dbPath);
+  }
+};
+
+/**
  * Evict the least-recently-used repo if pool is at capacity
  */
 function evictLRU(): void {

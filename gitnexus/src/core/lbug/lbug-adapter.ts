@@ -80,7 +80,24 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
     try {
       return await runWithSessionLock(async () => {
         await ensureLbugInitialized(dbPath);
-        return operation();
+        try {
+          return await operation();
+        } finally {
+          // Release the write-mode singleton immediately so it does not hold
+          // an OS file-lock between HTTP requests.  Without this, wiki
+          // (pool-adapter, read-only) and CLI `gitnexus wiki` (separate
+          // process) are blocked indefinitely by the lingering write handle.
+          try {
+            if (conn) await conn.close();
+          } catch { /* best-effort */ }
+          try {
+            if (db) await db.close();
+          } catch { /* best-effort */ }
+          conn = null;
+          db = null;
+          currentDbPath = null;
+          ftsLoaded = false;
+        }
       });
     } catch (err) {
       lastError = err;

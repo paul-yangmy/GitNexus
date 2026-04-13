@@ -112,3 +112,37 @@ function runGit(args: string[], cwd?: string): Promise<void> {
     });
   });
 }
+
+export function buildGitRepoUrl(repoNameOrUrl: string): string {
+  const trimmed = repoNameOrUrl.trim();
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed;
+  }
+  return `https://github.com/${trimmed.replace(/^\/+|\/+$/g, '')}.git`;
+}
+
+export async function cloneRepositorySnapshot(
+  url: string,
+  targetDir: string,
+  branch?: string,
+): Promise<string> {
+  validateGitUrl(url);
+  await fs.mkdir(path.dirname(targetDir), { recursive: true });
+  const args = ['clone', '--depth', '1'];
+  if (branch) {
+    args.push('--branch', branch);
+  }
+  args.push(url, targetDir);
+  await runGit(args);
+  return targetDir;
+}
+
+export async function ensureGitRepository(targetDir: string): Promise<void> {
+  const exists = await fs.access(path.join(targetDir, '.git')).then(
+    () => true,
+    () => false,
+  );
+  if (!exists) {
+    await runGit(['init'], targetDir);
+  }
+}

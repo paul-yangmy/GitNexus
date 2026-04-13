@@ -43,6 +43,7 @@ export class JobManager {
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private emitter = new EventEmitter();
   private cleanupTimer: ReturnType<typeof setInterval>;
+  private lastLoggedProgress = new Map<string, string>();
 
   constructor() {
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
@@ -97,6 +98,20 @@ export class JobManager {
     if (!job) return;
 
     Object.assign(job, update);
+
+    const shouldLog =
+      update.status === 'complete' ||
+      update.status === 'failed' ||
+      (!!update.error && update.error.trim().length > 0);
+    const logKey = `${update.status ?? job.status}:${update.error ?? ''}`;
+    if (shouldLog && this.lastLoggedProgress.get(id) !== logKey) {
+      this.lastLoggedProgress.set(id, logKey);
+      console.log(
+        `[analyze-job:${id}] status=${update.status ?? job.status}${
+          update.error ? ` error="${update.error}"` : ''
+        }`,
+      );
+    }
 
     if (this.isTerminal(job.status)) {
       job.completedAt = job.completedAt ?? Date.now();
@@ -190,6 +205,7 @@ export class JobManager {
     for (const [id, job] of this.jobs) {
       if (this.isTerminal(job.status) && job.completedAt && now - job.completedAt > JOB_TTL_MS) {
         this.jobs.delete(id);
+        this.lastLoggedProgress.delete(id);
       }
     }
   }
