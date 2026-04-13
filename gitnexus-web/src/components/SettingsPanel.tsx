@@ -391,8 +391,7 @@ export const SettingsPanel = ({
                   className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 font-mono text-sm text-text-primary transition-all outline-none placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
                 />
                 <p className="text-xs text-text-muted">
-                  Run <code className="rounded bg-elevated px-1 py-0.5">gitnexus serve</code> to
-                  start the local server
+                  Start the local backend service before opening the detail workspace
                 </p>
               </div>
             </div>

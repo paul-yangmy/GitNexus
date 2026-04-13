@@ -26,7 +26,12 @@ export interface GraphCanvasHandle {
   focusNode: (nodeId: string) => void;
 }
 
-export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
+interface GraphCanvasProps {
+  compact?: boolean;
+}
+
+export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
+  ({ compact = false }, ref) => {
   const {
     graph,
     setSelectedNode,
@@ -228,8 +233,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     resetZoom();
   }, [setSelectedNode, setSigmaSelectedNode, resetZoom]);
 
-  return (
-    <div className="relative h-full w-full bg-void">
+    return (
+      <div className="relative h-full w-full bg-void">
       {/* Background gradient */}
       <div className="pointer-events-none absolute inset-0">
         <div
@@ -348,29 +353,32 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       )}
 
       {/* Query FAB */}
-      <QueryFAB />
+      {!compact && <QueryFAB />}
 
       {/* AI Highlights toggle - Top Right */}
-      <div className="absolute top-4 right-4 z-20">
-        <button
-          onClick={handleToggleAIHighlights}
-          className={
-            isAIHighlightsEnabled
-              ? 'flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-400/40 bg-cyan-500/15 text-cyan-200 transition-colors hover:border-cyan-300/60 hover:bg-cyan-500/20'
-              : 'flex h-10 w-10 items-center justify-center rounded-lg border border-border-subtle bg-elevated text-text-muted transition-colors hover:bg-hover hover:text-text-primary'
-          }
-          title={isAIHighlightsEnabled ? 'Turn off all highlights' : 'Turn on AI highlights'}
-          data-testid="ai-highlights-toggle"
-        >
-          {isAIHighlightsEnabled ? (
-            <Lightbulb className="h-4 w-4" />
-          ) : (
-            <LightbulbOff className="h-4 w-4" />
-          )}
-        </button>
-      </div>
+      {!compact && (
+        <div className="absolute top-4 right-4 z-20">
+          <button
+            onClick={handleToggleAIHighlights}
+            className={
+              isAIHighlightsEnabled
+                ? 'flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-400/40 bg-cyan-500/15 text-cyan-200 transition-colors hover:border-cyan-300/60 hover:bg-cyan-500/20'
+                : 'flex h-10 w-10 items-center justify-center rounded-lg border border-border-subtle bg-elevated text-text-muted transition-colors hover:bg-hover hover:text-text-primary'
+            }
+            title={isAIHighlightsEnabled ? 'Turn off all highlights' : 'Turn on AI highlights'}
+            data-testid="ai-highlights-toggle"
+          >
+            {isAIHighlightsEnabled ? (
+              <Lightbulb className="h-4 w-4" />
+            ) : (
+              <LightbulbOff className="h-4 w-4" />
+            )}
+          </button>
+        </div>
+      )}
     </div>
-  );
-});
+    );
+  },
+);
 
 GraphCanvas.displayName = 'GraphCanvas';

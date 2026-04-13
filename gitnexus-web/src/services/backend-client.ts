@@ -68,6 +68,57 @@ export interface JobStatus {
   completedAt?: number;
 }
 
+export interface ImportedWorkspace {
+  repoName: string;
+  repoPath: string;
+  workspaceRoot?: string;
+  sourceLabel: string;
+  branch?: string;
+}
+
+export interface ProductHistoryEntry {
+  id: string;
+  userId: string;
+  userName?: string;
+  repoName: string;
+  repoPath: string;
+  sourceType: 'archive' | 'git';
+  sourceLabel: string;
+  branch?: string;
+  importedAt: string;
+  updatedAt?: string;
+  wikiDir?: string;
+  wikiBundlePath?: string;
+  wikiPassword?: string;
+  mcpEndpoint: string;
+  mcpRepoName: string;
+  stats?: {
+    files?: number;
+    nodes?: number;
+    edges?: number;
+    communities?: number;
+    processes?: number;
+    embeddings?: number;
+  };
+  previousVersions?: Array<{
+    id: string;
+    importedAt: string;
+    repoPath?: string;
+    wikiDir?: string;
+    wikiBundlePath?: string;
+    wikiPassword?: string;
+    stats?: ProductHistoryEntry['stats'];
+  }>;
+}
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: 'admin' | 'user';
+  createdAt: string;
+}
+
 export class BackendError extends Error {
   constructor(
     message: string,
@@ -191,12 +242,19 @@ export function streamSSE<T = unknown>(url: string, handlers: SSEHandlers<T>): A
 // ── Configuration ──────────────────────────────────────────────────────────
 
 let _backendUrl = 'http://localhost:4747';
+let _authToken: string | null = null;
 
 export const setBackendUrl = (url: string): void => {
   _backendUrl = url.replace(/\/$/, '');
 };
 
 export const getBackendUrl = (): string => _backendUrl;
+
+export const setAuthToken = (token: string | null): void => {
+  _authToken = token;
+};
+
+export const getAuthToken = (): string | null => _authToken;
 
 /**
  * Normalize a user-entered server URL into a base URL suitable for setBackendUrl().
@@ -285,6 +343,10 @@ const assertOk = async (response: Response): Promise<void> => {
 
 const repoParam = (repo?: string): string => (repo ? `repo=${encodeURIComponent(repo)}` : '');
 
+const buildAuthHeaders = (): Record<string, string> => {
+  return _authToken ? { Authorization: `Bearer ${_authToken}` } : {};
+};
+
 // ── API Methods ────────────────────────────────────────────────────────────
 
 /** Server info from /api/info. */
@@ -299,6 +361,61 @@ export const fetchServerInfo = async (): Promise<ServerInfo> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/info`);
   await assertOk(response);
   return response.json() as Promise<ServerInfo>;
+};
+
+export const login = async (request: {
+  username: string;
+  password: string;
+}): Promise<{ token: string; user: AuthUser }> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  await assertOk(response);
+  return response.json() as Promise<{ token: string; user: AuthUser }>;
+};
+
+export const fetchCurrentUser = async (): Promise<AuthUser> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/auth/me`, {
+    headers: buildAuthHeaders(),
+  });
+  await assertOk(response);
+  const body = await response.json();
+  return body.user as AuthUser;
+};
+
+export const logout = async (): Promise<void> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/auth/logout`, {
+    method: 'POST',
+    headers: buildAuthHeaders(),
+  });
+  await assertOk(response);
+};
+
+export const fetchUsers = async (): Promise<AuthUser[]> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/auth/users`, {
+    headers: buildAuthHeaders(),
+  });
+  await assertOk(response);
+  const body = await response.json();
+  return (body.users ?? []) as AuthUser[];
+};
+
+export const createUser = async (request: {
+  username: string;
+  password: string;
+  displayName?: string;
+  role?: 'admin' | 'user';
+}): Promise<AuthUser> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/auth/users`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildAuthHeaders() },
+    body: JSON.stringify(request),
+  });
+  await assertOk(response);
+  const body = await response.json();
+  return body.user as AuthUser;
 };
 
 /**
@@ -657,6 +774,155 @@ export const streamEmbeddingProgress = (
     onComplete: onComplete as (data: unknown) => void,
     onError,
   });
+};
+
+// ── Product workflow API ──────────────────────────────────────────────────
+
+export const importArchive = async (file: File): Promise<ImportedWorkspace> => {
+  const filename = encodeURIComponent(file.name || 'uploaded-repository.zip');
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/product/import/archive?filename=${filename}`,
+    {
+      method: 'POST',
+      headers: buildAuthHeaders(),
+      body: file,
+    },
+    10 * 60_000,
+  );
+  await assertOk(response);
+  return response.json() as Promise<ImportedWorkspace>;
+};
+
+export const importRepository = async (request: {
+  repoName: string;
+  branch: string;
+}): Promise<ImportedWorkspace> => {
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/product/import/repository`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders() },
+      body: JSON.stringify(request),
+    },
+    2 * 60_000,
+  );
+  await assertOk(response);
+  return response.json() as Promise<ImportedWorkspace>;
+};
+
+export const fetchProductHistory = async (scope: 'mine' | 'all' = 'mine'): Promise<ProductHistoryEntry[]> => {
+  const query = scope === 'all' ? '?scope=all' : '';
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/product/history${query}`,
+    { headers: buildAuthHeaders() },
+  );
+  await assertOk(response);
+  const body = await response.json();
+  return (body.history ?? []) as ProductHistoryEntry[];
+};
+
+export const deleteProductHistory = async (entryId: string): Promise<void> => {
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/product/history/${encodeURIComponent(entryId)}`,
+    { method: 'DELETE', headers: buildAuthHeaders() },
+  );
+  await assertOk(response);
+};
+
+export const generateChineseWiki = async (request: {
+  repoName: string;
+  repoPath: string;
+  sourceType: 'archive' | 'git';
+  sourceLabel: string;
+  branch?: string;
+  model?: string;
+  baseUrl?: string;
+  apiKey?: string;
+}): Promise<ProductHistoryEntry> => {
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/product/wiki`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders() },
+      body: JSON.stringify(request),
+    },
+    2 * 60_000,
+  );
+  await assertOk(response);
+  const body = await response.json();
+  return body.entry as ProductHistoryEntry;
+};
+
+export const startWikiAsync = async (request: {
+  repoName: string;
+  repoPath: string;
+  sourceType: 'archive' | 'git';
+  sourceLabel: string;
+  branch?: string;
+  model?: string;
+  baseUrl?: string;
+  apiKey?: string;
+}): Promise<{ jobId: string }> => {
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/product/wiki/async`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders() },
+      body: JSON.stringify(request),
+    },
+    30_000,
+  );
+  await assertOk(response);
+  return response.json() as Promise<{ jobId: string }>;
+};
+
+export const streamWikiProgress = (
+  jobId: string,
+  onProgress: (progress: JobProgress) => void,
+  onComplete: (data: { entry?: ProductHistoryEntry }) => void,
+  onError: (error: string) => void,
+): AbortController => {
+  return streamSSE<JobProgress>(
+    `${_backendUrl}/api/product/wiki/jobs/${encodeURIComponent(jobId)}/progress`,
+    {
+      onMessage: onProgress,
+      onComplete: onComplete as (data: unknown) => void,
+      onError,
+    },
+  );
+};
+
+export const downloadEncryptedWiki = async (
+  entryId: string,
+  filename: string,
+): Promise<void> => {
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/product/history/${encodeURIComponent(entryId)}/wiki`,
+    { headers: buildAuthHeaders() },
+    60_000,
+  );
+  await assertOk(response);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
+export const fetchWikiPreview = async (
+  entryId: string,
+): Promise<{ repoName: string; pages: Record<string, string> }> => {
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/product/history/${encodeURIComponent(entryId)}/wiki/preview`,
+    { headers: buildAuthHeaders() },
+    30_000,
+  );
+  await assertOk(response);
+  return response.json() as Promise<{ repoName: string; pages: Record<string, string> }>;
 };
 
 // ── Convenience: connect to server ─────────────────────────────────────────

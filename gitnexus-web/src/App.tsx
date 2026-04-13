@@ -14,6 +14,7 @@ import { createKnowledgeGraph } from './core/graph/graph';
 import {
   connectToServer,
   fetchRepos,
+  fetchProductHistory,
   normalizeServerUrl,
   connectHeartbeat,
   BackendError,
@@ -49,6 +50,45 @@ const AppContent = () => {
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
   const [serverDisconnected, setServerDisconnected] = useState(false);
+
+  /**
+   * Fetch repos visible to the current user.
+   * DB-primary: in platform mode the repo list is derived from the user's
+   * product history, enriched with live MCP metadata when available.
+   * Falls back to the full MCP list only in standalone / unauthenticated mode.
+   */
+  const fetchUserRepos = useCallback(async (): Promise<BackendRepo[]> => {
+    const allRepos = await fetchRepos().catch(() => [] as BackendRepo[]);
+    try {
+      const history = await fetchProductHistory('mine');
+      if (history.length > 0) {
+        // DB-primary: only show repos that exist in the user's product history
+        const seen = new Set<string>();
+        return history
+          .filter((e) => {
+            const key = e.mcpRepoName || e.repoName;
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .map((e) => {
+            const key = e.mcpRepoName || e.repoName;
+            return (
+              allRepos.find((r) => r.name === key) ?? ({
+                name: key,
+                path: e.repoPath,
+                repoPath: e.repoPath,
+                indexedAt: e.updatedAt ?? e.importedAt,
+                stats: e.stats,
+              } as BackendRepo)
+            );
+          });
+      }
+    } catch {
+      // Standalone mode or no auth token — show all repos
+    }
+    return allRepos;
+  }, []);
 
   const handleServerConnect = useCallback(
     async (result: ConnectResult): Promise<void> => {
@@ -104,6 +144,12 @@ const AppContent = () => {
   const autoConnectRan = useRef(false);
   useEffect(() => {
     if (autoConnectRan.current) return;
+    try {
+      const authToken = window.localStorage.getItem('product.auth.token');
+      if (!authToken) return;
+    } catch {
+      return;
+    }
     const params = new URLSearchParams(window.location.search);
     if (!params.has('server')) return;
     autoConnectRan.current = true;
@@ -160,7 +206,7 @@ const AppContent = () => {
         await handleServerConnect(result);
         setProgress(null);
         setServerBaseUrl(baseUrl);
-        fetchRepos()
+        fetchUserRepos()
           .then((repos) => setAvailableRepos(repos))
           .catch((e) => console.warn('Failed to fetch repo list:', e));
       })
@@ -177,7 +223,7 @@ const AppContent = () => {
           setProgress(null);
         }, ERROR_RESET_DELAY_MS);
       });
-  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
+  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos, fetchUserRepos]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
@@ -211,7 +257,7 @@ const AppContent = () => {
       <DropZone
         onServerConnect={async (result, serverUrl) => {
           // Refresh repo list before transitioning so it's ready in the header
-          const repos = await fetchRepos().catch(() => [] as BackendRepo[]);
+          const repos = await fetchUserRepos();
           setAvailableRepos(repos);
           await handleServerConnect(result);
           setProgress(null);
@@ -239,7 +285,10 @@ const AppContent = () => {
         onFocusNode={handleFocusNode}
         availableRepos={availableRepos}
         onSwitchRepo={switchRepo}
-        onReposChanged={(repos) => setAvailableRepos(repos)}
+        onReposChanged={async () => {
+          const repos = await fetchUserRepos();
+          setAvailableRepos(repos);
+        }}
         onAnalyzeComplete={async (repoName) => {
           // A new repo was just indexed via the header dropdown.
           // Refresh the repo list, connect to the new repo, and switch to it.
@@ -248,7 +297,7 @@ const AppContent = () => {
           const url = serverBaseUrl ?? 'http://localhost:4747';
           for (let attempt = 0; attempt < 2; attempt++) {
             try {
-              const repos = await fetchRepos();
+              const repos = await fetchUserRepos();
               setAvailableRepos(repos);
               const result = await connectToServer(url, undefined, undefined, repoName);
               await handleServerConnect(result);
@@ -262,7 +311,7 @@ const AppContent = () => {
                 continue;
               }
               console.error('Failed to connect after analyze:', err);
-              fetchRepos()
+              fetchUserRepos()
                 .then((repos) => setAvailableRepos(repos))
                 .catch(() => {});
               return;

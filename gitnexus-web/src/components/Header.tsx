@@ -1,20 +1,15 @@
 import {
   Search,
-  Settings,
-  HelpCircle,
-  Sparkles,
-  Github,
-  Star,
   FolderOpen,
   ChevronDown,
   Trash2,
   RefreshCw,
   Loader2,
+  ArrowLeft,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import {
   deleteRepo,
-  fetchRepos,
   startAnalyze,
   streamAnalyzeProgress,
   type BackendRepo,
@@ -23,7 +18,6 @@ import {
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { GraphNode } from 'gitnexus-shared';
 import { EmbeddingStatus } from './EmbeddingStatus';
-import { RepoAnalyzer } from './RepoAnalyzer';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -45,7 +39,7 @@ interface HeaderProps {
   /** Called when a newly-analyzed repo is ready; triggers connectToServer. */
   onAnalyzeComplete?: (repoName: string) => void;
   /** Called after a repo is deleted or list needs refresh. */
-  onReposChanged?: (repos: BackendRepo[]) => void;
+  onReposChanged?: () => void | Promise<void>;
 }
 
 export const Header = ({
@@ -58,15 +52,10 @@ export const Header = ({
   const {
     projectName,
     graph,
-    openChatPanel,
-    isRightPanelOpen,
-    rightPanelTab,
-    setSettingsPanelOpen,
-    setHelpDialogBoxOpen,
+    setViewMode,
   } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
-  const [showAnalyzer, setShowAnalyzer] = useState(false);
   const [reanalyzing, setReanalyzing] = useState<string | null>(null); // repo name being re-analyzed
   const [reanalyzeProgress, setReanalyzeProgress] = useState<JobProgress | null>(null);
   const reanalyzeSseRef = useRef<AbortController | null>(null);
@@ -97,7 +86,6 @@ export const Header = ({
       }
       if (repoDropdownRef.current && !repoDropdownRef.current.contains(e.target as Node)) {
         setIsRepoDropdownOpen(false);
-        setShowAnalyzer(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -159,12 +147,21 @@ export const Header = ({
     <header className="flex items-center justify-between border-b border-dashed border-border-subtle bg-deep px-5 py-3">
       {/* Left section */}
       <div className="flex items-center gap-4">
+        {/* Back to home button */}
+        <button
+          onClick={() => setViewMode('onboarding')}
+          className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+          title="返回首页"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </button>
+
         {/* Logo */}
         <div className="flex items-center gap-2.5">
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-accent to-node-interface text-sm font-bold text-white shadow-glow">
             ◇
           </div>
-          <span className="text-[15px] font-semibold tracking-tight">GitNexus</span>
+          <span className="text-[15px] font-semibold tracking-tight">Code Workspace</span>
         </div>
 
         {/* Project badge + repo dropdown */}
@@ -173,7 +170,6 @@ export const Header = ({
             <button
               onClick={() => {
                 setIsRepoDropdownOpen((prev) => !prev);
-                setShowAnalyzer(false);
               }}
               className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition-all ${
                 isRepoDropdownOpen
@@ -190,20 +186,7 @@ export const Header = ({
 
             {isRepoDropdownOpen && (
               <div className="absolute top-full left-0 z-50 mt-1.5 w-80 animate-slide-up overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
-                {showAnalyzer ? (
-                  <div className="p-4">
-                    <RepoAnalyzer
-                      variant="sheet"
-                      onComplete={(repoName) => {
-                        setShowAnalyzer(false);
-                        setIsRepoDropdownOpen(false);
-                        onAnalyzeComplete?.(repoName);
-                      }}
-                      onCancel={() => setShowAnalyzer(false)}
-                    />
-                  </div>
-                ) : (
-                  <>
+                <>
                     {/* Repo list */}
                     {availableRepos.length > 0 && (
                       <div>
@@ -303,12 +286,12 @@ export const Header = ({
                                 }
                                 try {
                                   await deleteRepo(repo.name);
-                                  const updated = await fetchRepos();
-                                  onReposChanged?.(updated);
+                                  await onReposChanged?.();
                                   // If we deleted the active repo, switch to first available
-                                  if (repo.name === projectName && updated.length > 0) {
-                                    onSwitchRepo?.(updated[0].name);
-                                  } else if (updated.length === 0) {
+                                  if (repo.name === projectName && availableRepos.length > 1) {
+                                    const next = availableRepos.find((r) => r.name !== repo.name);
+                                    if (next) onSwitchRepo?.(next.name);
+                                  } else if (availableRepos.length <= 1) {
                                     // No repos left — go back to onboarding
                                     window.location.reload();
                                   }
@@ -344,27 +327,7 @@ export const Header = ({
                       </div>
                     )}
 
-                    {/* Analyze new */}
-                    <div
-                      className={
-                        availableRepos.length > 0 || reanalyzing
-                          ? 'border-t border-border-subtle'
-                          : ''
-                      }
-                    >
-                      <button
-                        onClick={() => setShowAnalyzer(true)}
-                        disabled={!!reanalyzing}
-                        className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <Sparkles className="h-3.5 w-3.5 shrink-0 text-accent" />
-                        <span className="text-sm text-text-secondary">
-                          Analyze a new repository...
-                        </span>
-                      </button>
-                    </div>
-                  </>
-                )}
+                </>
               </div>
             )}
           </div>
@@ -433,19 +396,6 @@ export const Header = ({
 
       {/* Right section */}
       <div className="flex items-center gap-2">
-        {/* GitHub Star Button */}
-        <a
-          href="https://github.com/abhigyanpatwari/GitNexus"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="group flex items-center gap-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 px-3.5 py-2 text-sm font-medium text-white shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:from-purple-500 hover:to-pink-500 hover:shadow-xl"
-        >
-          <Github className="h-4 w-4" />
-          <span className="hidden sm:inline">Star if cool</span>
-          <Star className="h-3.5 w-3.5 transition-all group-hover:fill-yellow-300 group-hover:text-yellow-300" />
-          <span className="hidden sm:inline">✨</span>
-        </a>
-
         {/* Stats */}
         {graph && (
           <div className="mr-2 flex items-center gap-4 text-xs text-text-muted">
@@ -457,34 +407,7 @@ export const Header = ({
         {/* Embedding Status */}
         <EmbeddingStatus />
 
-        {/* Icon buttons */}
-        <button
-          onClick={() => setSettingsPanelOpen(true)}
-          className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-          title="AI Settings"
-        >
-          <Settings className="h-4.5 w-4.5" />
-        </button>
-        <button
-          title="Help"
-          onClick={() => setHelpDialogBoxOpen(true)}
-          className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-        >
-          <HelpCircle className="h-4.5 w-4.5" />
-        </button>
 
-        {/* AI Button */}
-        <button
-          onClick={openChatPanel}
-          className={`flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-all ${
-            isRightPanelOpen && rightPanelTab === 'chat'
-              ? 'bg-accent text-white shadow-glow'
-              : 'bg-gradient-to-r from-accent to-accent-dim text-white shadow-glow hover:-translate-y-0.5 hover:shadow-lg'
-          } `}
-        >
-          <Sparkles className="h-4 w-4" />
-          <span>Nexus AI</span>
-        </button>
       </div>
     </header>
   );
