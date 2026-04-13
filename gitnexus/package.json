@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.5.3",
+  "version": "1.6.0",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -46,6 +46,7 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"
   },
@@ -117,7 +118,8 @@
   "overrides": {
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
-    }
+    },
+    "tree-sitter-c": "0.23.2"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -2111,3 +2111,68 @@ describe('Python abstract dispatch', () => {
     expect(edges.length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-9: lookupMethodByOwnerWithMRO — child.parent_method() via C3 parent walk
+// ---------------------------------------------------------------------------
+
+describe('Python Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-child-extends-parent'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.parent_method() to Parent.parent_method via C3 MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'parent_method' && c.targetFilePath.includes('parent.py'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('run');
+  });
+});
+
+describe('Python Grandchild→Child→Parent — 3-level C3 MRO walk (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-multi-level-mro'), () => {});
+  }, 60000);
+
+  it('detects Grandparent, Parent, and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Grandparent');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS chain: Child → Parent, Parent → Grandparent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+    expect(edgeSet(extends_)).toContain('Parent → Grandparent');
+  });
+
+  it('resolves c.gp_method() to Grandparent.gp_method via 3-level C3 walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const gpCall = calls.find(
+      (c) => c.target === 'gp_method' && c.targetFilePath.includes('grandparent.py'),
+    );
+    expect(gpCall).toBeDefined();
+    expect(gpCall!.source).toBe('run');
+  });
+});

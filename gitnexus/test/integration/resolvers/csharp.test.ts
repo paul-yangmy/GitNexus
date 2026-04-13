@@ -132,6 +132,23 @@ describe('C# ambiguous symbol resolution', () => {
   });
 });
 
+describe('C# qualified class names', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-qualified-types'), () => {});
+  }, 60000);
+
+  it('stores distinct qualified names for same-named classes across namespaces', () => {
+    const users = getNodesByLabelFull(result, 'Class').filter((node) => node.name === 'User');
+    expect(users).toHaveLength(2);
+    expect(users.map((node) => node.properties.qualifiedName).sort()).toEqual([
+      'Data.Auth.User',
+      'Services.Auth.User',
+    ]);
+  });
+});
+
 describe('C# call resolution with arity filtering', () => {
   let result: PipelineResult;
 
@@ -1909,5 +1926,125 @@ describe('C# overloaded method disambiguation (METHOD_IMPLEMENTS)', () => {
     const ifaces = getNodesByLabel(result, 'Interface');
     expect(classes).toContain('SqlRepository');
     expect(ifaces).toContain('IRepository');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-9: lookupMethodByOwnerWithMRO — c.ParentMethod() via implements-split walk
+// ---------------------------------------------------------------------------
+
+describe('C# Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-child-extends-parent'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.ParentMethod() to Parent.ParentMethod via implements-split MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'ParentMethod' && c.targetFilePath.includes('Parent.cs'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('Run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-11: C# User : IValidator — interface default method via implements-split
+// ---------------------------------------------------------------------------
+
+describe('C# User implements IValidator — interface default method (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-interface-default-method'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects IValidator interface and User class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('IValidator');
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+  });
+
+  it('emits IMPLEMENTS edge: User → IValidator', () => {
+    const impls = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(impls)).toContain('User → IValidator');
+  });
+
+  it('resolves user.Validate() to IValidator.Validate via implements-split MRO', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(
+      (c) => c.target === 'Validate' && c.targetFilePath.includes('Validator.cs'),
+    );
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.source).toBe('Run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Interface-to-interface heritage (single + multi base interface)
+// ---------------------------------------------------------------------------
+
+describe('C# interface-to-interface heritage', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-interface-heritage'), () => {});
+  }, 60000);
+
+  it('detects 1 class and 4 interfaces', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['MyService']);
+    expect(getNodesByLabel(result, 'Interface')).toEqual([
+      'IAuditableService',
+      'IBarService',
+      'IBaseInterface',
+      'IFooService',
+    ]);
+  });
+
+  it('emits no EXTENDS edges (fixture has no class inheritance)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(0);
+  });
+
+  it('emits IMPLEMENTS edge: IFooService → IBaseInterface (single base interface)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const targets = edgeSet(implements_);
+    expect(targets).toContain('IFooService → IBaseInterface');
+  });
+
+  it('emits IMPLEMENTS edges: IAuditableService → IFooService, IBarService (multi base interfaces)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const targets = edgeSet(implements_);
+    expect(targets).toContain('IAuditableService → IFooService');
+    expect(targets).toContain('IAuditableService → IBarService');
+  });
+
+  it('emits IMPLEMENTS edge: MyService → IAuditableService (class implements derived interface)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const targets = edgeSet(implements_);
+    expect(targets).toContain('MyService → IAuditableService');
+  });
+
+  it('emits exactly 4 IMPLEMENTS edges total', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(4);
   });
 });

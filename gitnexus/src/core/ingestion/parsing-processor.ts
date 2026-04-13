@@ -4,7 +4,9 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import { SymbolTable } from './symbol-table.js';
+import type { SymbolTableReader, SymbolTableWriter } from './model/symbol-table.js';
+// SymbolTableReader is used for the FieldExtractorContext stub; the
+// parsing functions themselves need Writer because they call .add().
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
@@ -36,15 +38,15 @@ import type {
   ExtractedImport,
   ExtractedCall,
   ExtractedAssignment,
-  ExtractedHeritage,
   ExtractedRoute,
   ExtractedFetchCall,
   ExtractedDecoratorRoute,
   ExtractedToolDef,
   FileConstructorBindings,
-  FileTypeEnvBindings,
+  FileScopeBindings,
   ExtractedORMQuery,
 } from './workers/parse-worker.js';
+import type { ExtractedHeritage } from './model/heritage-map.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
@@ -60,7 +62,7 @@ export interface WorkerExtractedData {
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
-  typeEnvBindings: FileTypeEnvBindings[];
+  fileScopeBindings: FileScopeBindings[];
 }
 
 // ============================================================================
@@ -70,7 +72,7 @@ export interface WorkerExtractedData {
 const processParsingWithWorkers = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
-  symbolTable: SymbolTable,
+  symbolTable: SymbolTableWriter,
   astCache: ASTCache,
   workerPool: WorkerPool,
   onFileProgress?: FileProgressCallback,
@@ -94,7 +96,7 @@ const processParsingWithWorkers = async (
       toolDefs: [],
       ormQueries: [],
       constructorBindings: [],
-      typeEnvBindings: [],
+      fileScopeBindings: [],
     };
 
   const total = files.length;
@@ -118,7 +120,7 @@ const processParsingWithWorkers = async (
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
-  const allTypeEnvBindings: FileTypeEnvBindings[] = [];
+  const fileScopeBindingsByFile: FileScopeBindings[] = [];
   for (const result of chunkResults) {
     for (const node of result.nodes) {
       graph.addNode({
@@ -140,6 +142,7 @@ const processParsingWithWorkers = async (
         returnType: sym.returnType,
         declaredType: sym.declaredType,
         ownerId: sym.ownerId,
+        qualifiedName: sym.qualifiedName,
       });
     }
 
@@ -153,7 +156,8 @@ const processParsingWithWorkers = async (
     for (const _item of result.toolDefs) allToolDefs.push(_item);
     if (result.ormQueries) for (const _item of result.ormQueries) allORMQueries.push(_item);
     for (const _item of result.constructorBindings) allConstructorBindings.push(_item);
-    for (const _item of result.typeEnvBindings) allTypeEnvBindings.push(_item);
+    if (result.fileScopeBindings)
+      for (const _item of result.fileScopeBindings) fileScopeBindingsByFile.push(_item);
   }
 
   // Merge and log skipped languages from workers
@@ -183,7 +187,7 @@ const processParsingWithWorkers = async (
     toolDefs: allToolDefs,
     ormQueries: allORMQueries,
     constructorBindings: allConstructorBindings,
-    typeEnvBindings: allTypeEnvBindings,
+    fileScopeBindings: fileScopeBindingsByFile,
   };
 };
 
@@ -237,19 +241,30 @@ const seqMethodMapCache = new Map<
 function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
   while (current) {
-    if (CLASS_CONTAINER_TYPES.has(current.type)) return current;
+    if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      // Return singleton_class directly so the method extractor sees it as
+      // the owner node and correctly marks methods as static. Name resolution
+      // for qualified names is handled separately by findEnclosingClassInfo.
+      return current;
+    }
     current = current.parent;
   }
   return null;
 }
 
-/** Minimal no-op SymbolTable stub for FieldExtractorContext (sequential path has a real
- *  SymbolTable, but it's incomplete at this stage — use the stub for safety). */
-const NOOP_SYMBOL_TABLE_SEQ = {
-  lookupExactAll: () => [],
+/** Minimal no-op SymbolTable stub for FieldExtractorContext (sequential
+ *  path has a real SymbolTable, but it's incomplete at this stage — use
+ *  the stub for safety). Implements the full {@link SymbolTableReader}
+ *  surface so future extractor additions don't silently fall off an
+ *  `as unknown as` cast. */
+const NOOP_SYMBOL_TABLE_SEQ: SymbolTableReader = {
   lookupExact: () => undefined,
   lookupExactFull: () => undefined,
-} as unknown as SymbolTable;
+  lookupExactAll: () => [],
+  lookupCallableByName: () => [],
+  getFiles: () => [][Symbol.iterator](),
+  getStats: () => ({ fileCount: 0 }),
+};
 
 function seqGetFieldInfo(
   classNode: SyntaxNode,
@@ -271,7 +286,7 @@ function seqGetFieldInfo(
 const processParsingSequential = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
-  symbolTable: SymbolTable,
+  symbolTable: SymbolTableWriter,
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback,
 ) => {
@@ -353,7 +368,14 @@ const processParsingSequential = async (
       continue;
     }
 
-    // Build per-file type environment for FieldExtractor context (lightweight — skipped if no fieldExtractor)
+    // Build per-file type environment for FieldExtractor context (lightweight — skipped if no fieldExtractor).
+    //
+    // Note: this TypeEnv is intentionally NOT flushed into the BindingAccumulator.
+    // The accumulator feed happens later in `call-processor.ts` via its own
+    // `typeEnv.flush(accumulator)` call. Flushing here would double-count
+    // file-scope bindings and break the single-use invariant of `flush()`.
+    // See the BindingAccumulator class JSDoc for the full accumulator
+    // lifecycle and flush-site ownership rules.
     const typeEnv = provider.fieldExtractor
       ? buildTypeEnv(tree, language, {
           enclosingFunctionFinder: provider.enclosingFunctionFinder,
@@ -368,21 +390,29 @@ const processParsingSequential = async (
         captureMap[c.name] = c.node;
       });
 
-      const nodeLabel = getLabelFromCaptures(captureMap, provider);
-      if (!nodeLabel) return;
+      const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
+      const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+      const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
+      if (!defaultNodeLabel) return;
 
       const nameNode = captureMap['name'];
+      const extractedClassSymbol =
+        definitionNode && provider.classExtractor?.isTypeDeclaration(definitionNode)
+          ? provider.classExtractor.extract(definitionNode, {
+              name: nameNode?.text,
+              type: defaultNodeLabel,
+            })
+          : null;
+      const nodeLabel = extractedClassSymbol?.type ?? defaultNodeLabel;
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
-      if (!nameNode && nodeLabel !== 'Constructor') return;
-      const nodeName = nameNode ? nameNode.text : 'init';
+      if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) return;
+      const nodeName = extractedClassSymbol?.name ?? (nameNode ? nameNode.text : 'init');
 
-      const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
       const startLine = definitionNodeForRange
         ? definitionNodeForRange.startPosition.row + lineOffset
         : nameNode
           ? nameNode.startPosition.row + lineOffset
           : lineOffset;
-      const definitionNode = getDefinitionNodeFromCaptures(captureMap);
 
       // Compute enclosing class BEFORE node ID — needed to qualify method IDs
       const needsOwner =
@@ -493,6 +523,12 @@ const processParsingSequential = async (
         );
       }
       const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
+      const classNodeForSymbol = definitionNodeForRange || definitionNode || nameNode;
+      const qualifiedTypeName =
+        extractedClassSymbol?.qualifiedName ??
+        (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
+          ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
+          : undefined);
       const frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
@@ -518,6 +554,7 @@ const processParsingSequential = async (
                   nameNode || definitionNodeForRange,
                   nodeName,
                 ),
+          ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
           ...(frameworkHint
             ? {
                 astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
@@ -573,6 +610,7 @@ const processParsingSequential = async (
         returnType: methodProps.returnType as string | undefined,
         declaredType,
         ownerId: enclosingClassId ?? undefined,
+        qualifiedName: qualifiedTypeName,
       });
 
       const fileId = generateId('File', file.path);
@@ -620,7 +658,7 @@ const processParsingSequential = async (
 export const processParsing = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
-  symbolTable: SymbolTable,
+  symbolTable: SymbolTableWriter,
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback,
   workerPool?: WorkerPool,

@@ -1,4 +1,9 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
+import {
+  BindingAccumulator,
+  enrichExportedTypeMap,
+  type BindingEntry,
+} from './binding-accumulator.js';
 import { processStructure } from './structure-processor.js';
 import { processMarkdown } from './markdown-processor.js';
 import { processCobol, isCobolFile, isJclFile } from './cobol-processor.js';
@@ -21,9 +26,8 @@ import {
   buildImportedRawReturnTypes,
   type ExportedTypeMap,
   buildExportedTypeMapFromGraph,
-  buildImplementorMap,
-  mergeImplementorMaps,
 } from './call-processor.js';
+import { buildHeritageMap } from './model/heritage-map.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
@@ -43,21 +47,22 @@ import type {
   ExtractedCall,
   ExtractedDecoratorRoute,
   ExtractedFetchCall,
-  ExtractedHeritage,
   ExtractedORMQuery,
   ExtractedRoute,
   ExtractedToolDef,
   FileConstructorBindings,
 } from './workers/parse-worker.js';
+import type { ExtractedHeritage } from './model/heritage-map.js';
 import {
   processHeritage,
   processHeritageFromExtracted,
   extractExtractedHeritageFromFiles,
+  getHeritageStrategyForLanguage,
 } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
-import { createResolutionContext } from './resolution-context.js';
+import { createResolutionContext } from './model/resolution-context.js';
 import { createASTCache } from './ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
@@ -330,7 +335,7 @@ async function runCrossFileBindingPropagation(
   // For the worker path, buildTypeEnv runs inside workers without SymbolTable,
   // so exported bindings must be collected from graph + SymbolTable in main thread.
   if (exportedTypeMap.size === 0 && graph.nodeCount > 0) {
-    const graphExports = buildExportedTypeMapFromGraph(graph, ctx.symbols);
+    const graphExports = buildExportedTypeMapFromGraph(graph, ctx.model.symbols);
     for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
   }
 
@@ -357,7 +362,7 @@ async function runCrossFileBindingPropagation(
           filesWithGaps++;
           break;
         }
-        const def = ctx.symbols.lookupExactFull(binding.sourcePath, binding.exportedName);
+        const def = ctx.model.symbols.lookupExactFull(binding.sourcePath, binding.exportedName);
         if (def?.returnType) {
           filesWithGaps++;
           break;
@@ -409,11 +414,15 @@ async function runCrossFileBindingPropagation(
         }
       }
 
-      const importedReturns = buildImportedReturnTypes(filePath, ctx.namedImportMap, ctx.symbols);
+      const importedReturns = buildImportedReturnTypes(
+        filePath,
+        ctx.namedImportMap,
+        ctx.model.symbols,
+      );
       const importedRawReturns = buildImportedRawReturnTypes(
         filePath,
         ctx.namedImportMap,
-        ctx.symbols,
+        ctx.model.symbols,
       );
       if (seeded.size === 0 && importedReturns.size === 0) continue;
       if (!allPathSet.has(filePath)) continue;
@@ -651,8 +660,9 @@ async function runChunkedParseAndResolve(
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
+  bindingAccumulator: BindingAccumulator;
 }> {
-  const symbolTable = ctx.symbols;
+  const symbolTable = ctx.model.symbols;
 
   const parseableScanned = scannedFiles.filter((f) => {
     const lang = getLanguageFromFilename(f.path);
@@ -783,7 +793,7 @@ async function runChunkedParseAndResolve(
   // Phase 14: Collect exported type bindings for cross-file propagation
   const exportedTypeMap: ExportedTypeMap = new Map();
   // Accumulate file-scope TypeEnv bindings from workers (closes worker/sequential quality gap)
-  const workerTypeEnvBindings: { filePath: string; bindings: [string, string][] }[] = [];
+  const bindingAccumulator = new BindingAccumulator();
   // Accumulate fetch() calls from workers for Next.js route matching
   const allFetchCalls: ExtractedFetchCall[] = [];
   // Accumulate framework-extracted routes (Laravel, etc.) for Route node creation
@@ -917,9 +927,31 @@ async function runChunkedParseAndResolve(
             });
           }),
         ]);
-        // Collect TypeEnv file-scope bindings for exported type enrichment
-        if (chunkWorkerData.typeEnvBindings?.length) {
-          for (const _item of chunkWorkerData.typeEnvBindings) workerTypeEnvBindings.push(_item);
+        // Collect file-scope bindings into BindingAccumulator. The worker
+        // IPC payload carries only file-scope entries (`scope = ''`
+        // hardcoded here). See the FileScopeBindings JSDoc in
+        // parse-worker.ts for the rationale and Phase 9 reversion path.
+        //
+        // Defensive validation at the IPC boundary: silently skip entries
+        // with non-string varName/typeName. If a future worker regression
+        // (or a Phase 9 reversion mistake that emits 3-tuples into the
+        // 2-tuple consumer) produces malformed data, logging is better
+        // than silently writing `undefined` into the enrichment map.
+        if (chunkWorkerData.fileScopeBindings?.length) {
+          for (const { filePath, bindings } of chunkWorkerData.fileScopeBindings) {
+            if (typeof filePath !== 'string' || filePath.length === 0) continue;
+            if (!Array.isArray(bindings)) continue;
+            const entries: BindingEntry[] = [];
+            for (const tuple of bindings) {
+              if (!Array.isArray(tuple) || tuple.length !== 2) continue;
+              const [varName, typeName] = tuple;
+              if (typeof varName !== 'string' || typeof typeName !== 'string') continue;
+              entries.push({ scope: '', varName, typeName });
+            }
+            if (entries.length > 0) {
+              bindingAccumulator.appendFile(filePath, entries);
+            }
+          }
         }
         // Collect fetch() calls for Next.js route matching
         if (chunkWorkerData.fetchCalls?.length) {
@@ -949,11 +981,11 @@ async function runChunkedParseAndResolve(
       // chunkContents + chunkFiles + chunkWorkerData go out of scope → GC reclaims
     }
 
-    // Complete implementor map from all worker heritage, then resolve CALLS once (interface dispatch).
-    const fullWorkerImplementorMap =
+    // Build unified HeritageMap (parent lookup + implementor index) after all chunks.
+    const fullWorkerHeritageMap =
       deferredWorkerHeritage.length > 0
-        ? buildImplementorMap(deferredWorkerHeritage, ctx)
-        : new Map<string, Set<string>>();
+        ? buildHeritageMap(deferredWorkerHeritage, ctx, getHeritageStrategyForLanguage)
+        : undefined;
 
     if (deferredWorkerCalls.length > 0) {
       await processCallsFromExtracted(
@@ -974,7 +1006,20 @@ async function runChunkedParseAndResolve(
           });
         },
         deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
-        fullWorkerImplementorMap,
+        fullWorkerHeritageMap,
+        // Phase 9: pass the accumulator so processCallsFromExtracted can fall back
+        // to file-scope TypeEnv bindings when the SymbolTable lacks a return type
+        // for a cross-file callee (e.g. var x = getUser() → x: User).
+        //
+        // Lifecycle ordering: the accumulator is populated but NOT yet finalized
+        // at this seam. finalize() is called later (after the sequential-path
+        // processCalls which also appends via typeEnv.flush()). Moving finalize()
+        // before this call would break sequential-path repos. Pre-finalize reads
+        // are safe because finalize() is a write-lock-only operation with no side
+        // effects on stored data. All worker-path appendFile calls complete in the
+        // chunk loop above, so every worker-contributed binding is available via
+        // fileScopeGet().
+        bindingAccumulator,
       );
     }
 
@@ -984,6 +1029,7 @@ async function runChunkedParseAndResolve(
         deferredAssignments,
         ctx,
         deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
+        bindingAccumulator, // Phase 9 fallback parity with processCallsFromExtracted (R3)
       );
     }
   } finally {
@@ -994,17 +1040,40 @@ async function runChunkedParseAndResolve(
   // Synthesize wildcard import bindings once after ALL imports are processed,
   // before any call resolution — same rationale as the worker-path inline synthesis.
   if (sequentialChunkPaths.length > 0) synthesizeWildcardImportBindings(graph, ctx);
-  // Merge implementor-map deltas per chunk (O(heritage per chunk)), not O(|edges|) graph scans
-  // per chunk — mirrors worker-path deferred heritage without re-iterating all relationships.
-  const sequentialImplementorMap = new Map<string, Set<string>>();
+  // Pass 1: Extract heritage from all sequential chunks.
+  // Heritage must be fully accumulated BEFORE call resolution so the HeritageMap
+  // has the complete ancestor chain and implementor index (same constraint as
+  // the worker path).
+  //
+  // File contents are read once here and cached for Pass 2 to avoid a 2× I/O
+  // cost on the sequential path (ASTs are intentionally NOT cached — rebuilding
+  // them in Pass 2 keeps peak memory bounded to one chunk at a time).
+  const allSequentialHeritage: ExtractedHeritage[] = [];
+  const cachedSequentialChunkFiles: Array<Array<{ path: string; content: string }>> = [];
   for (const chunkPaths of sequentialChunkPaths) {
     const chunkContents = await readFileContents(repoPath, chunkPaths);
     const chunkFiles = chunkPaths
       .filter((p) => chunkContents.has(p))
       .map((p) => ({ path: p, content: chunkContents.get(p)! }));
+    cachedSequentialChunkFiles.push(chunkFiles);
     astCache = createASTCache(chunkFiles.length);
     const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
-    mergeImplementorMaps(sequentialImplementorMap, buildImplementorMap(sequentialHeritage, ctx));
+    // Manual loop (not spread) — `push(...arr)` blows the stack on very large
+    // arrays, see #650. Pay the explicit iteration cost for safety.
+    for (const h of sequentialHeritage) allSequentialHeritage.push(h);
+    astCache.clear();
+  }
+  // Build unified HeritageMap from all sequential heritage (parent lookup + implementor index).
+  const sequentialHeritageMap =
+    allSequentialHeritage.length > 0
+      ? buildHeritageMap(allSequentialHeritage, ctx, getHeritageStrategyForLanguage)
+      : undefined;
+
+  // Pass 2: Process calls, heritage edges, fetch calls, and ORM queries per chunk.
+  // Reuse the file contents cached in Pass 1 instead of re-reading from disk.
+  for (let chunkIdx = 0; chunkIdx < sequentialChunkPaths.length; chunkIdx++) {
+    const chunkFiles = cachedSequentialChunkFiles[chunkIdx];
+    astCache = createASTCache(chunkFiles.length);
     const rubyHeritage = await processCalls(
       graph,
       chunkFiles,
@@ -1015,7 +1084,8 @@ async function runChunkedParseAndResolve(
       undefined,
       undefined,
       undefined,
-      sequentialImplementorMap,
+      sequentialHeritageMap,
+      bindingAccumulator,
     );
     await processHeritage(graph, chunkFiles, astCache, ctx);
     if (rubyHeritage.length > 0) {
@@ -1031,6 +1101,10 @@ async function runChunkedParseAndResolve(
       extractORMQueriesInline(f.path, f.content, allORMQueries);
     }
     astCache.clear();
+    // Release cached chunk content as soon as Pass 2 finishes with it so the
+    // Pass-1 content map drains incrementally rather than being held for the
+    // full duration of Pass 2.
+    cachedSequentialChunkFiles[chunkIdx] = [];
   }
 
   // Log resolution cache stats
@@ -1043,39 +1117,31 @@ async function runChunkedParseAndResolve(
     );
   }
 
-  // ── Worker path quality enrichment: merge TypeEnv file-scope bindings into ExportedTypeMap ──
-  // Workers return file-scope bindings from their TypeEnv fixpoint (includes inferred types
-  // like `const config = getConfig()` → Config). Filter by graph isExported to match
-  // the sequential path's collectExportedBindings behavior.
-  if (workerTypeEnvBindings.length > 0) {
-    let enriched = 0;
-    for (const { filePath, bindings } of workerTypeEnvBindings) {
-      for (const [name, type] of bindings) {
-        // Verify the symbol is exported via graph node
-        const nodeId = `Function:${filePath}:${name}`;
-        const varNodeId = `Variable:${filePath}:${name}`;
-        const constNodeId = `Const:${filePath}:${name}`;
-        const node =
-          graph.getNode(nodeId) ?? graph.getNode(varNodeId) ?? graph.getNode(constNodeId);
-        if (!node?.properties?.isExported) continue;
+  // ── Finalize the accumulator before the read phase begins. All worker-path
+  //    appends (line ~934) and sequential-path flushes (via `processCalls` →
+  //    `typeEnv.flush()` earlier in this function) have completed by here,
+  //    so the finalize-write-lock is correct at this seam. Making the
+  //    lifecycle contract explicit — `append → finalize → consume → dispose`.
+  //    Previously `finalize()` was called much later in `runPipelineFromRepo`
+  //    after the enrichment loop had already read the mutable accumulator.
+  bindingAccumulator.finalize();
 
-        let fileExports = exportedTypeMap.get(filePath);
-        if (!fileExports) {
-          fileExports = new Map();
-          exportedTypeMap.set(filePath, fileExports);
-        }
-        // Don't overwrite existing entries (Tier 0 from SymbolTable is authoritative)
-        if (!fileExports.has(name)) {
-          fileExports.set(name, type);
-          enriched++;
-        }
-      }
-    }
-    if (isDev && enriched > 0) {
-      console.log(
-        `🔗 Worker TypeEnv enrichment: ${enriched} fixpoint-inferred exports added to ExportedTypeMap`,
-      );
-    }
+  // ── Worker path quality enrichment: merge file-scope bindings into ExportedTypeMap ──
+  // Counterpart to `collectExportedBindings()` in call-processor.ts which
+  // handles the sequential path (main thread, full SymbolTable access).
+  // This call handles the worker path via the accumulator. Both sites
+  // populate the same `exportedTypeMap` with subtly different export-check
+  // semantics — sequential uses SymbolTable + graph lookup, `enrichExportedTypeMap`
+  // uses a three-candidate-ID graph lookup. They must stay in sync until
+  // Phase 9 unifies them. If you edit one, check the other.
+  //
+  // The enrichment loop itself lives in `binding-accumulator.ts` so tests
+  // can exercise the real production code instead of reimplementing it.
+  const enriched = enrichExportedTypeMap(bindingAccumulator, graph, exportedTypeMap);
+  if (isDev && enriched > 0) {
+    console.log(
+      `🔗 Worker TypeEnv enrichment: ${enriched} fixpoint-inferred exports added to ExportedTypeMap`,
+    );
   }
 
   // ── Final synthesis pass for whole-module-import languages ──
@@ -1103,6 +1169,7 @@ async function runChunkedParseAndResolve(
     allDecoratorRoutes,
     allToolDefs,
     allORMQueries,
+    bindingAccumulator,
   };
 }
 
@@ -1334,6 +1401,15 @@ export const runPipelineFromRepo = async (
   const ctx = createResolutionContext();
   const pipelineStart = Date.now();
 
+  // Hoisted reference for error-path cleanup. The accumulator is normally
+  // disposed at the happy-path seam after the dev telemetry log, but if any
+  // step between the runChunkedParseAndResolve return and that seam throws
+  // (ORM processing, tool node creation, Phase 14, graph analysis), the
+  // catch handler disposes it here so the heap footprint does not leak
+  // through the rethrow. See binding-accumulator.ts dispose() JSDoc for the
+  // lifecycle contract.
+  let bindingAccumulatorForCleanup: BindingAccumulator | undefined;
+
   try {
     // Phase 1+2: Scan paths, build structure, process markdown
     const { scannedFiles, allPaths, totalFiles } = await runScanAndStructure(
@@ -1350,6 +1426,7 @@ export const runPipelineFromRepo = async (
       allDecoratorRoutes,
       allToolDefs,
       allORMQueries,
+      bindingAccumulator,
     } = await runChunkedParseAndResolve(
       graph,
       ctx,
@@ -1361,6 +1438,11 @@ export const runPipelineFromRepo = async (
       onProgress,
       options,
     );
+    // Track the accumulator for error-path cleanup — the happy-path dispose
+    // is still at the post-telemetry seam below, this reference is only
+    // consulted by the catch handler if any step between here and there
+    // throws.
+    bindingAccumulatorForCleanup = bindingAccumulator;
 
     // ── Phase 3.5: Route Registry (Next.js + PHP + Laravel + decorators) ──
     type RouteEntry = { filePath: string; source: string };
@@ -1672,6 +1754,46 @@ export const runPipelineFromRepo = async (
       processORMQueries(graph, allORMQueries, isDev);
     }
 
+    // `bindingAccumulator.finalize()` was moved inside `runChunkedParseAndResolve`
+    // to immediately precede the enrichment loop — see the comment there for
+    // the ordering rationale. By the time execution
+    // reaches this point, the accumulator has already been finalized, consumed
+    // by the enrichment loop, and is ready for dispose() below after the dev
+    // telemetry log captures peak state.
+
+    if (isDev) {
+      if (bindingAccumulator.totalBindings > 0) {
+        const memKB = Math.round(bindingAccumulator.estimateMemoryBytes() / 1024);
+        console.log(
+          `📦 BindingAccumulator: ${bindingAccumulator.totalBindings} bindings across ${bindingAccumulator.fileCount} files (~${memKB} KB)`,
+        );
+      } else if (totalFiles > 0) {
+        // Zero-binding signal: if the pipeline parsed files but the
+        // accumulator is empty, something upstream dropped all bindings.
+        // Flag it so operators can spot a regression (e.g. a worker path
+        // that accidentally emits empty fileScopeBindings arrays for every
+        // file, or a TypeEnv build failure). Dev-mode only.
+        console.log(
+          `📦 BindingAccumulator: EMPTY — 0 bindings across 0 files despite ${totalFiles} parsed files. If the codebase has typed bindings, this indicates an upstream regression.`,
+        );
+      }
+    }
+
+    // Release the accumulator's heap footprint now. Both consumers of the
+    // accumulator have completed:
+    //   1. ExportedTypeMap enrichment loop (enrichExportedTypeMap, above).
+    //   2. Phase 9: processCallsFromExtracted in runChunkedParseAndResolve,
+    //      which uses the accumulator as a BindingAccumulator fallback for
+    //      cross-file return types when the SymbolTable has no returnType.
+    // Phase 14 (runCrossFileBindingPropagation) and runGraphAnalysisPhases
+    // do not read the accumulator — keeping it alive through those long-
+    // running phases pins heap for no reason.
+    bindingAccumulator.dispose();
+    // Happy-path dispose completed — clear the cleanup ref so the catch
+    // handler doesn't attempt a second (harmless but noisy) dispose if a
+    // later phase throws.
+    bindingAccumulatorForCleanup = undefined;
+
     // ── Phase 14: Cross-file binding propagation (topological level sort) ──
     await runCrossFileBindingPropagation(
       graph,
@@ -1716,6 +1838,12 @@ export const runPipelineFromRepo = async (
 
     return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult };
   } catch (error) {
+    // Error-path cleanup: dispose the accumulator if a step after the
+    // destructure from runChunkedParseAndResolve but before the happy-path
+    // dispose threw. The reference is cleared on the happy path, so this
+    // is a no-op when the pipeline completed successfully and then threw
+    // from an unrelated post-dispose step (e.g., future cleanup code).
+    bindingAccumulatorForCleanup?.dispose();
     ctx.clear();
     throw error;
   }

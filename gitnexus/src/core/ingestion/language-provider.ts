@@ -9,9 +9,10 @@
  * so adding a language to the enum without creating a provider is a compiler error.
  */
 
-import type { SupportedLanguages } from 'gitnexus-shared';
+import type { SupportedLanguages, MroStrategy } from 'gitnexus-shared';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
 import type { CallRouter } from './call-routing.js';
+import type { ClassExtractor } from './class-types.js';
 import type { ExportChecker } from './export-detection.js';
 import type { FieldExtractor } from './field-extractor.js';
 import type { MethodExtractor } from './method-types.js';
@@ -25,13 +26,10 @@ import type { NodeLabel } from 'gitnexus-shared';
 export type CaptureMap = Record<string, SyntaxNode | undefined>;
 
 // ── Strategy tag types ─────────────────────────────────────────────────────
-/** MRO strategy for multiple inheritance resolution. */
-export type MroStrategy =
-  | 'first-wins'
-  | 'c3'
-  | 'leftmost-base'
-  | 'implements-split'
-  | 'qualified-syntax';
+// NOTE: `MroStrategy` is defined in `gitnexus-shared` and re-exported above
+// so `core/ingestion/model/resolve.ts` can consume it without importing from
+// this file (which would pull in the full language-registry dependency graph).
+
 /** How a language handles imports — determines wildcard synthesis behavior. */
 export type ImportSemantics = 'named' | 'wildcard' | 'namespace';
 
@@ -131,6 +129,10 @@ interface LanguageProviderConfig {
    *  declarations. Produces MethodInfo[] with name, parameters, visibility, isAbstract,
    *  isFinal, annotations metadata. Default: undefined (no method extraction). */
   readonly methodExtractor?: MethodExtractor;
+  /** Class/type extractor for deriving canonical qualified names for class-like symbols.
+   *  Uses the same provider-driven strategy pattern as method/field extraction so
+   *  namespace/package/module rules stay language-specific. */
+  readonly classExtractor?: ClassExtractor;
   /** Extract a semantic description for a definition node (e.g., PHP Eloquent
    *  property arrays, relation method descriptions).
    *  Default: undefined (no description extraction). */

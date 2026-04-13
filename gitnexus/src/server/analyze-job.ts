@@ -88,6 +88,11 @@ export class JobManager {
     return this.jobs.get(id);
   }
 
+  /** Return a snapshot of all tracked jobs for inspection. */
+  listJobs(): AnalyzeJob[] {
+    return Array.from(this.jobs.values());
+  }
+
   updateJob(
     id: string,
     update: Partial<

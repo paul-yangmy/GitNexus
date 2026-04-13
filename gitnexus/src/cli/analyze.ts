@@ -47,6 +47,8 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
+  noStats?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
 }
